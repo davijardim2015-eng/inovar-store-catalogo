@@ -48,6 +48,7 @@ const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0;
 function useCatalogo() {
   const [produtos, setProdutos] = useState([]);
   const [whatsappLoja, setWhatsappLoja] = useState('');
+  const [faixasDesconto, setFaixasDesconto] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
 
@@ -63,6 +64,7 @@ function useCatalogo() {
         setProdutos(lista);
         const cfgRow = (cfgRes.data || [])[0];
         if (cfgRow && cfgRow.valor && cfgRow.valor.whatsappLoja) setWhatsappLoja(cfgRow.valor.whatsappLoja);
+        if (cfgRow && cfgRow.valor && Array.isArray(cfgRow.valor.faixasDesconto)) setFaixasDesconto(cfgRow.valor.faixasDesconto);
       } catch (e) {
         console.error('Erro ao carregar catálogo:', e);
         setErro('Não foi possível carregar os produtos agora. Tente novamente em instantes.');
@@ -72,7 +74,7 @@ function useCatalogo() {
     })();
   }, []);
 
-  return { produtos, whatsappLoja, carregando, erro };
+  return { produtos, whatsappLoja, faixasDesconto, carregando, erro };
 }
 
 function ProdutoCard({ p, onAdd }) {
@@ -97,24 +99,83 @@ function ProdutoCard({ p, onAdd }) {
   );
 }
 
-function CarrinhoDrawer({ itens, onQtd, onFechar, whatsappLoja }) {
+function CarrinhoDrawer({ itens, onQtd, onFechar, onConcluir, whatsappLoja, faixasDesconto }) {
   const [etapa, setEtapa] = useState('itens'); // itens | checkout
   const [nome, setNome] = useState('');
   const [telefone, setTelefone] = useState('');
   const [endereco, setEndereco] = useState('');
   const [pagamento, setPagamento] = useState('Pix');
   const [aviso, setAviso] = useState('');
+  const [enviando, setEnviando] = useState(false);
 
-  const total = itens.reduce((s, it) => s + num(it.produto.preco_venda) * it.quantidade, 0);
+  const fmtPct = (p) => String(p).replace('.', ',');
+  // Cada item recebe o desconto da faixa correspondente à SUA quantidade (faixasDesconto vem da tabela config)
+  const calc = itens.map(it => {
+    const preco = num(it.produto.preco_venda);
+    const bruto = preco * it.quantidade;
+    const faixa = (faixasDesconto || []).find(f => it.quantidade >= num(f.min) && it.quantidade <= num(f.max));
+    const pct = faixa ? num(faixa.pct) : 0;
+    const desconto = Math.round(bruto * pct) / 100;
+    return { ...it, preco, bruto, pct, desconto, liquido: bruto - desconto };
+  });
+  const comDesconto = calc.filter(l => l.pct > 0);
+  const subtotal = calc.reduce((s, l) => s + l.bruto, 0);
+  const descontoTotal = calc.reduce((s, l) => s + l.desconto, 0);
+  const total = Math.round((subtotal - descontoTotal) * 100) / 100;
 
-  const enviarWhatsApp = () => {
+  const banner = comDesconto.length > 0 && (
+    <div className="bg-green-50 border-2 border-green-400 text-green-800 rounded-xl px-3 py-2.5 mb-3 text-sm font-bold leading-snug space-y-1">
+      {comDesconto.map(l => (
+        <div key={l.produto.id}>
+          🎉 Parabéns! Você ganhou {fmtPct(l.pct)}% de desconto por levar {l.quantidade} unidades!
+          {comDesconto.length > 1 && <span className="font-medium"> ({l.produto.nome})</span>}
+        </div>
+      ))}
+    </div>
+  );
+  const resumo = (
+    <div className="mt-3 text-sm">
+      {descontoTotal > 0 && (
+        <React.Fragment>
+          <div className="flex justify-between text-slate-500"><span>Subtotal</span><span>{fmtMoney(subtotal)}</span></div>
+          <div className="flex justify-between text-green-600 font-semibold"><span>Desconto</span><span>-{fmtMoney(descontoTotal)}</span></div>
+        </React.Fragment>
+      )}
+      <div className="flex justify-between items-center pt-2 mt-1 border-t border-slate-100 font-display font-extrabold text-navy text-lg"><span>Total a pagar</span><span>{fmtMoney(total)}</span></div>
+    </div>
+  );
+
+  const enviarWhatsApp = async () => {
     if (!nome.trim() || !telefone.trim()) { setAviso('Preencha nome e telefone antes de enviar.'); return; }
     const numero = (whatsappLoja || '').replace(/\D/g, '');
     if (!numero) { setAviso('WhatsApp da loja não está configurado. Entre em contato diretamente.'); return; }
-    setAviso('');
-    const linhas = itens.map(it => `• ${it.produto.nome} — Qtd ${it.quantidade} — ${fmtMoney(it.produto.preco_venda * it.quantidade)}`);
-    const msg = `Olá! Gostaria de fazer um pedido:\n\n${linhas.join('\n')}\n\n*Total: ${fmtMoney(total)}*\n\nNome: ${nome}\nTelefone: ${telefone}\nEndereço/Retirada: ${endereco || '—'}\nPagamento: ${pagamento}`;
-    window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`, '_blank');
+    setAviso(''); setEnviando(true);
+    // Abre a aba já no clique (evita bloqueio de pop-up no celular) e só depois preenche o link do WhatsApp.
+    const aba = window.open('', '_blank');
+    const pctEfetivo = subtotal > 0 ? Math.round(descontoTotal / subtotal * 10000) / 100 : 0;
+    const pedido = {
+      id: 'web-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      status: 'Pendente', origem: 'catalogo',
+      cliente_nome: nome.trim(), cliente_telefone: telefone.trim(), cliente_endereco: endereco.trim() || null,
+      forma_pagamento: pagamento,
+      itens: calc.map(l => ({ produtoId: l.produto.id, produtoNome: l.produto.nome, quantidade: l.quantidade, precoUnit: l.preco, descontoPct: l.pct, desconto: l.desconto })),
+      desconto_pct: pctEfetivo, desconto_valor: descontoTotal, valor_total: total,
+    };
+    try {
+      const { error } = await supabaseClient.from('pedidos').insert(pedido);
+      if (error) throw error;
+    } catch (e) {
+      // Não trava o cliente: o pedido ainda segue pelo WhatsApp mesmo se o registro no banco falhar.
+      console.error('Não foi possível registrar o pedido no Supabase:', e);
+    }
+    const linhasMsg = calc.map(l => `• ${l.produto.nome} — Qtd ${l.quantidade} — ${fmtMoney(l.bruto)}${l.pct > 0 ? ` (🏷️ -${fmtPct(l.pct)}%)` : ''}`);
+    const pctsUnicos = [...new Set(comDesconto.map(l => l.pct))];
+    const linhaDesconto = descontoTotal > 0 ? `\n\nSubtotal: ${fmtMoney(subtotal)}\n🏷️ Desconto${pctsUnicos.length === 1 ? ` de ${fmtPct(pctsUnicos[0])}%` : ''} aplicado: -${fmtMoney(descontoTotal)}` : '';
+    const msg = `Olá! Gostaria de fazer um pedido:\n\n${linhasMsg.join('\n')}${linhaDesconto}\n\n*Total: ${fmtMoney(total)}*\n\nNome: ${nome}\nTelefone: ${telefone}\nEndereço/Retirada: ${endereco || '—'}\nPagamento: ${pagamento}`;
+    const url = `https://wa.me/${numero}?text=${encodeURIComponent(msg)}`;
+    if (aba) aba.location.href = url; else window.location.href = url;
+    setEnviando(false);
+    onConcluir();
   };
 
   return (
@@ -128,29 +189,37 @@ function CarrinhoDrawer({ itens, onQtd, onFechar, whatsappLoja }) {
 
         {etapa === 'itens' ? (
           <React.Fragment>
-            {itens.length === 0 && <p className="text-sm text-slate-500 py-6 text-center">Seu carrinho está vazio.</p>}
-            {itens.map(it => (
-              <div key={it.produto.id} className="flex items-center gap-3 py-2 border-b border-slate-100">
-                <span className="flex-1 text-sm text-navy font-medium">{it.produto.nome}</span>
+            {calc.length === 0 && <p className="text-sm text-slate-500 py-6 text-center">Seu carrinho está vazio.</p>}
+            {calc.length > 0 && banner}
+            {calc.map(l => (
+              <div key={l.produto.id} className="flex items-center gap-3 py-2 border-b border-slate-100">
+                <span className="flex-1 text-sm text-navy font-medium">
+                  {l.produto.nome}
+                  {l.pct > 0 && <span className="block text-xs text-green-600 font-semibold">-{fmtPct(l.pct)}% ({fmtMoney(l.desconto)})</span>}
+                </span>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => onQtd(it.produto.id, it.quantidade - 1)} className="w-7 h-7 rounded-full bg-slate-100 text-navy font-bold">−</button>
-                  <span className="w-5 text-center text-sm">{it.quantidade}</span>
-                  <button onClick={() => onQtd(it.produto.id, it.quantidade + 1)} className="w-7 h-7 rounded-full bg-slate-100 text-navy font-bold">+</button>
+                  <button onClick={() => onQtd(l.produto.id, l.quantidade - 1)} className="w-7 h-7 rounded-full bg-slate-100 text-navy font-bold">−</button>
+                  <span className="w-5 text-center text-sm">{l.quantidade}</span>
+                  <button onClick={() => onQtd(l.produto.id, l.quantidade + 1)} className="w-7 h-7 rounded-full bg-slate-100 text-navy font-bold">+</button>
                 </div>
-                <span className="w-20 text-right text-sm font-semibold text-navy2">{fmtMoney(it.produto.preco_venda * it.quantidade)}</span>
+                <span className="w-20 text-right text-sm font-semibold text-navy2">
+                  {fmtMoney(l.liquido)}
+                  {l.pct > 0 && <span className="block text-[10px] text-slate-400 line-through font-normal">{fmtMoney(l.bruto)}</span>}
+                </span>
               </div>
             ))}
-            {itens.length > 0 && (
+            {calc.length > 0 && (
               <React.Fragment>
-                <div className="flex justify-between items-center pt-4 font-display font-bold text-navy">
-                  <span>Total</span><span>{fmtMoney(total)}</span>
-                </div>
+                {resumo}
                 <button onClick={() => setEtapa('checkout')} className="mt-4 w-full bg-navy text-white font-semibold py-3 rounded-xl">Finalizar pedido</button>
               </React.Fragment>
             )}
           </React.Fragment>
         ) : (
           <React.Fragment>
+            {banner}
+            {resumo}
+            <div className="h-3"></div>
             <label className="block text-xs font-semibold text-navy mb-1">Nome</label>
             <input value={nome} onChange={e => setNome(e.target.value)} className="w-full border border-slate-200 rounded-lg px-3 py-2 mb-3 text-sm" />
             <label className="block text-xs font-semibold text-navy mb-1">Telefone</label>
@@ -162,8 +231,8 @@ function CarrinhoDrawer({ itens, onQtd, onFechar, whatsappLoja }) {
               <option>Pix</option><option>Cartão</option><option>Dinheiro</option>
             </select>
             {aviso && <div className="text-xs text-red-600 mb-2">⚠️ {aviso}</div>}
-            <button onClick={enviarWhatsApp} className="w-full bg-lime hover:bg-limedk text-navy font-bold py-3 rounded-xl mb-2">
-              <i className="fa-brands fa-whatsapp mr-2"></i>Enviar Pedido via WhatsApp
+            <button onClick={enviarWhatsApp} disabled={enviando} className="w-full bg-lime hover:bg-limedk disabled:opacity-60 text-navy font-bold py-3 rounded-xl mb-2">
+              <i className="fa-brands fa-whatsapp mr-2"></i>{enviando ? 'Registrando pedido...' : 'Enviar Pedido via WhatsApp'}
             </button>
             <button onClick={() => setEtapa('itens')} className="w-full text-navy2 text-sm py-1">← Voltar ao carrinho</button>
           </React.Fragment>
@@ -174,7 +243,7 @@ function CarrinhoDrawer({ itens, onQtd, onFechar, whatsappLoja }) {
 }
 
 function App() {
-  const { produtos, whatsappLoja, carregando, erro } = useCatalogo();
+  const { produtos, whatsappLoja, faixasDesconto, carregando, erro } = useCatalogo();
   const [busca, setBusca] = useState('');
   const [categoria, setCategoria] = useState('Todas');
   const [carrinho, setCarrinho] = useState([]);
@@ -232,7 +301,7 @@ function App() {
         {totalItens > 0 && <span className="absolute -top-1 -right-1 bg-navy text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center">{totalItens}</span>}
       </button>
 
-      {carrinhoAberto && <CarrinhoDrawer itens={carrinho} onQtd={alterarQtd} onFechar={() => setCarrinhoAberto(false)} whatsappLoja={whatsappLoja} />}
+      {carrinhoAberto && <CarrinhoDrawer itens={carrinho} onQtd={alterarQtd} onFechar={() => setCarrinhoAberto(false)} onConcluir={() => { setCarrinho([]); setCarrinhoAberto(false); }} whatsappLoja={whatsappLoja} faixasDesconto={faixasDesconto} />}
     </div>
   );
 }
