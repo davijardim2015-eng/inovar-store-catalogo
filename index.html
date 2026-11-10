@@ -55,6 +55,7 @@ function useCatalogo() {
   const [produtos, setProdutos] = useState([]);
   const [whatsappLoja, setWhatsappLoja] = useState('');
   const [faixasDesconto, setFaixasDesconto] = useState([]);
+  const [ordemTemas, setOrdemTemas] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
 
@@ -71,6 +72,7 @@ function useCatalogo() {
         const cfgRow = (cfgRes.data || [])[0];
         if (cfgRow && cfgRow.valor && cfgRow.valor.whatsappLoja) setWhatsappLoja(cfgRow.valor.whatsappLoja);
         if (cfgRow && cfgRow.valor && Array.isArray(cfgRow.valor.faixasDesconto)) setFaixasDesconto(cfgRow.valor.faixasDesconto);
+        if (cfgRow && cfgRow.valor && Array.isArray(cfgRow.valor.temasProduto)) setOrdemTemas(cfgRow.valor.temasProduto);
       } catch (e) {
         console.error('Erro ao carregar catálogo:', e);
         setErro('Não foi possível carregar os produtos agora. Tente novamente em instantes.');
@@ -80,7 +82,7 @@ function useCatalogo() {
     })();
   }, []);
 
-  return { produtos, whatsappLoja, faixasDesconto, carregando, erro };
+  return { produtos, whatsappLoja, faixasDesconto, ordemTemas, carregando, erro };
 }
 
 // Visualizador da foto em tamanho completo (toque/clique na foto do card).
@@ -154,6 +156,11 @@ function ProdutoCard({ p, onAdd, onVerFoto }) {
         : <div className="w-full h-28 sm:h-36 bg-slate-100 flex items-center justify-center text-slate-300 text-2xl"><i className="fa-solid fa-image"></i></div>}
       <div className="p-3 flex flex-col flex-1">
         {p.categoria && <span className="text-[10px] uppercase tracking-wide text-navy2/70 font-semibold">{ehServico ? `Serviço • ${p.categoria}` : p.categoria}</span>}
+        {Array.isArray(p.temas) && p.temas.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {p.temas.slice(0, 3).map(t => <span key={t} className="text-[10px] font-semibold text-navy2 bg-lime/30 rounded-full px-2 py-0.5">{t}</span>)}
+          </div>
+        )}
         <h3 className="font-display font-bold text-navy text-sm leading-snug mt-0.5 line-clamp-2">{p.nome}</h3>
         <div className="mt-auto pt-2 flex items-center justify-between gap-2">
           <span className="font-display font-extrabold text-navy2 text-base">{fmtMoney(p.preco_venda)}</span>
@@ -310,7 +317,8 @@ function CarrinhoDrawer({ itens, onQtd, onFechar, onConcluir, whatsappLoja, faix
 }
 
 function App() {
-  const { produtos, whatsappLoja, faixasDesconto, carregando, erro } = useCatalogo();
+  const { produtos, whatsappLoja, faixasDesconto, ordemTemas, carregando, erro } = useCatalogo();
+  const [tema, setTema] = useState('Todos');
   const [fotoAberta, setFotoAberta] = useState(null);
   const [busca, setBusca] = useState('');
   const [categoria, setCategoria] = useState('Todas');
@@ -319,10 +327,23 @@ function App() {
 
   const categorias = useMemo(() => ['Todas', ...Array.from(new Set(produtos.map(p => p.categoria).filter(Boolean)))], [produtos]);
 
+  const temasDe = (p) => (Array.isArray(p.temas) ? p.temas : []);
+  // Temas (subcategorias) que existem nos produtos da categoria escolhida, na ordem definida na Gestão.
+  const temas = useMemo(() => {
+    const daCategoria = produtos.filter(p => categoria === 'Todas' || p.categoria === categoria);
+    const presentes = Array.from(new Set(daCategoria.flatMap(temasDe)));
+    const pos = (t) => { const i = ordemTemas.indexOf(t); return i < 0 ? 9999 : i; };
+    return presentes.sort((a, b) => pos(a) - pos(b) || a.localeCompare(b, 'pt-BR'));
+  }, [produtos, categoria, ordemTemas]);
+  useEffect(() => { if (tema !== 'Todos' && !temas.includes(tema)) setTema('Todos'); }, [temas]);
+  const escolherCategoria = (c) => { setCategoria(c); setTema('Todos'); };
+
   const filtrados = produtos.filter(p => {
-    const okBusca = !busca.trim() || p.nome.toLowerCase().includes(busca.trim().toLowerCase()) || (p.categoria || '').toLowerCase().includes(busca.trim().toLowerCase());
+    const termo = busca.trim().toLowerCase();
+    const okBusca = !termo || p.nome.toLowerCase().includes(termo) || (p.categoria || '').toLowerCase().includes(termo) || temasDe(p).some(t => t.toLowerCase().includes(termo));
     const okCategoria = categoria === 'Todas' || p.categoria === categoria;
-    return okBusca && okCategoria;
+    const okTema = tema === 'Todos' || temasDe(p).includes(tema);
+    return okBusca && okCategoria && okTema;
   });
 
   const adicionar = (p) => setCarrinho(c => {
@@ -347,18 +368,29 @@ function App() {
         </div>
         <div className="flex gap-2 overflow-x-auto cat-row mt-3 pb-1">
           {categorias.map(c => (
-            <button key={c} onClick={() => setCategoria(c)}
+            <button key={c} onClick={() => escolherCategoria(c)}
               className={`cat-pill whitespace-nowrap px-3.5 py-1.5 rounded-full text-xs font-semibold border ${categoria === c ? 'bg-lime text-navy border-lime' : 'text-white/80 border-white/20'}`}>
               {c}
             </button>
           ))}
         </div>
+        {temas.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto cat-row mt-2 pb-1">
+            <span className="text-[11px] uppercase tracking-wide text-white/50 font-semibold whitespace-nowrap pr-1"><i className="fa-solid fa-tags mr-1"></i>Temas</span>
+            {['Todos', ...temas].map(t => (
+              <button key={t} onClick={() => setTema(t)}
+                className={`cat-pill whitespace-nowrap px-3 py-1 rounded-full text-[11px] font-semibold border ${tema === t ? 'bg-white text-navy border-white' : 'text-white/70 border-white/15 hover:border-white/40'}`}>
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
       <main className="px-4 pt-4">
         {carregando && <p className="text-white/70 text-sm text-center py-10">Carregando produtos...</p>}
         {erro && <p className="text-red-300 text-sm text-center py-10">{erro}</p>}
-        {!carregando && !erro && filtrados.length === 0 && <p className="text-white/70 text-sm text-center py-10">Nenhum produto encontrado.</p>}
+        {!carregando && !erro && filtrados.length === 0 && <p className="text-white/70 text-sm text-center py-10">Nenhum produto encontrado{tema !== 'Todos' ? ` no tema “${tema}”` : ''}.</p>}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {filtrados.map(p => <ProdutoCard key={p.id} p={p} onAdd={adicionar} onVerFoto={setFotoAberta} />)}
         </div>
