@@ -85,13 +85,28 @@ function useCatalogo() {
   return { produtos, whatsappLoja, faixasDesconto, ordemTemas, carregando, erro };
 }
 
-// Visualizador da foto em tamanho completo (toque/clique na foto do card).
+// Até 5 fotos por produto (coluna "imagens"); a primeira é a principal. Produtos antigos usam imagem_url.
+function fotosDe(p) {
+  const arr = Array.isArray(p.imagens) ? p.imagens.filter(Boolean) : [];
+  if (arr.length) return arr.slice(0, 5);
+  return p.imagem_url ? [p.imagem_url] : [];
+}
+
+// Visualizador das fotos em tamanho completo, com galeria (toque/clique na foto do card).
 function FotoViewer({ p, onFechar, onAdd }) {
+  const fotos = fotosDe(p);
+  const [idx, setIdx] = useState(0);
   const [zoom, setZoom] = useState(false);
+  const toqueRef = useRef(null);
+  const ir = (n) => { setZoom(false); setIdx(i => (i + n + fotos.length) % fotos.length); };
   const [adicionado, setAdicionado] = useState(false);
   const areaRef = useRef(null);
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onFechar(); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') onFechar();
+      else if (e.key === 'ArrowRight' && fotos.length > 1) ir(1);
+      else if (e.key === 'ArrowLeft' && fotos.length > 1) ir(-1);
+    };
     window.addEventListener('keydown', onKey);
     const overflowAntes = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -123,12 +138,31 @@ function FotoViewer({ p, onFechar, onAdd }) {
           <i className="fa-solid fa-xmark"></i>
         </button>
       </div>
-      <div ref={areaRef} className={`lb-area flex-1 min-h-0 ${zoom ? 'overflow-auto' : 'overflow-hidden flex items-center justify-center'} px-2`}>
-        <img src={p.imagem_url} alt={p.nome} onClick={alternarZoom} draggable={false}
+      <div ref={areaRef} className={`lb-area relative flex-1 min-h-0 ${zoom ? 'overflow-auto' : 'overflow-hidden flex items-center justify-center'} px-2`}
+        onTouchStart={e => { if (!zoom && e.touches.length === 1) toqueRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; }}
+        onTouchEnd={e => { const t0 = toqueRef.current; toqueRef.current = null; if (!t0 || zoom || fotos.length < 2) return; const dx = e.changedTouches[0].clientX - t0.x, dy = e.changedTouches[0].clientY - t0.y; if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) { e.preventDefault(); ir(dx < 0 ? 1 : -1); } }}>
+        {fotos.length > 1 && !zoom && (
+          <React.Fragment>
+            <button onClick={e => { e.stopPropagation(); ir(-1); }} aria-label="Foto anterior" className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 z-10 w-11 h-11 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center text-lg"><i className="fa-solid fa-chevron-left"></i></button>
+            <button onClick={e => { e.stopPropagation(); ir(1); }} aria-label="Próxima foto" className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-10 w-11 h-11 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center text-lg"><i className="fa-solid fa-chevron-right"></i></button>
+            <span className="absolute top-2 left-1/2 -translate-x-1/2 z-10 text-[11px] font-semibold text-white bg-black/50 rounded-full px-2.5 py-0.5">{idx + 1} / {fotos.length}</span>
+          </React.Fragment>
+        )}
+        <img key={idx} src={fotos[idx]} alt={`${p.nome} — foto ${idx + 1}`} onClick={alternarZoom} draggable={false}
           className={zoom ? 'max-w-none select-none' : 'max-w-full max-h-full object-contain select-none rounded-lg'}
           style={zoom ? { width: 'max(200%, 900px)', cursor: 'zoom-out' } : { cursor: 'zoom-in' }} />
       </div>
       <div className="px-4 py-3 text-white" onClick={e => e.stopPropagation()}>
+        {fotos.length > 1 && !zoom && (
+          <div className="flex justify-center gap-2 mb-3 overflow-x-auto">
+            {fotos.map((u, i) => (
+              <button key={i} onClick={() => { setZoom(false); setIdx(i); }} aria-label={`Ver foto ${i + 1}`}
+                className={`shrink-0 w-12 h-12 sm:w-14 sm:h-14 rounded-lg overflow-hidden border-2 ${i === idx ? 'border-lime' : 'border-transparent opacity-60 hover:opacity-100'}`}>
+                <img src={u} alt="" className="w-full h-full object-cover" />
+              </button>
+            ))}
+          </div>
+        )}
         {p.descricao && !zoom && <p className="text-xs sm:text-sm text-white/75 mb-3 max-w-2xl mx-auto text-center leading-relaxed">{p.descricao}</p>}
         <div className="flex items-center justify-center gap-3">
           <span className="text-[11px] text-white/50 hidden sm:inline">{zoom ? 'Clique na foto para reduzir' : 'Clique na foto para ampliar'}</span>
@@ -148,10 +182,11 @@ function ProdutoCard({ p, onAdd, onVerFoto }) {
   const [imgErro, setImgErro] = useState(false);
   return (
     <div className="bg-white rounded-2xl overflow-hidden shadow-sm flex flex-col">
-      {p.imagem_url && !imgErro
+      {fotosDe(p)[0] && !imgErro
         ? <button type="button" className="foto-btn" onClick={() => onVerFoto(p)} aria-label={`Ver foto completa de ${p.nome}`} title="Ver foto completa">
-            <img src={p.imagem_url} alt={p.nome} onError={() => setImgErro(true)} className="w-full h-28 sm:h-36 object-cover" />
+            <img src={fotosDe(p)[0]} alt={p.nome} onError={() => setImgErro(true)} className="w-full h-28 sm:h-36 object-cover" />
             <span className="lupa"><i className="fa-solid fa-magnifying-glass-plus"></i></span>
+            {fotosDe(p).length > 1 && <span className="absolute left-2 bottom-2 text-[10.5px] font-bold text-white bg-navy/75 rounded-full px-2 py-0.5"><i className="fa-regular fa-images mr-1"></i>{fotosDe(p).length} fotos</span>}
           </button>
         : <div className="w-full h-28 sm:h-36 bg-slate-100 flex items-center justify-center text-slate-300 text-2xl"><i className="fa-solid fa-image"></i></div>}
       <div className="p-3 flex flex-col flex-1">
